@@ -1,40 +1,60 @@
-import os
-import json
-from fastapi import FastAPI, Request
-import httpx
-import asyncio
+from flask import Flask, request
+from telegram import Bot
+import requests
+from bs4 import BeautifulSoup
 
-app = FastAPI()
+app = Flask(__name__)
 
-TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL = os.getenv("CHANNEL_ID")
+# إعدادات البوت
+TOKEN = '7975838878:AAE_lke0LIoSyAN6dpL742R2nM-fVBSKhho'
+CHANNEL = '@TrendMind'
+bot = Bot(token=TOKEN)
 
-async def send_alert_to_telegram(message, image_url=None):
-    async with httpx.AsyncClient() as client:
-        if image_url:
-            await client.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
-                data={"chat_id": CHANNEL, "photo": image_url, "caption": message}
-            )
-        else:
-            await client.post(
-                f"https://api.telegram.org/bot{TOKEN}/sendMessage",
-                data={"chat_id": CHANNEL, "text": message}
-            )
+# جلب صورة العقد من Webull
+def get_webull_option_image(strike, expiry, call_or_put):
+    try:
+        url = f"https://www.webull.com/quote/option/spx{expiry}/{strike}{'C' if call_or_put.upper() == 'CALL' else 'P'}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    data = await request.body()
-    payload = json.loads(data.decode("utf-8"))
+        # صورة ثابتة مؤقتًا (حتى يتم الربط بسيرفر صور تلقائي)
+        return "https://yourserver.com/contract_example.png"
+    except:
+        return "https://yourserver.com/fallback.png"
 
-    type_ = payload.get("type")
-    strike = payload.get("strike")
-    entry = payload.get("entry")
-    expiry = payload.get("expiry")
+# Webhook من TradingView
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.json
 
-    msg = f"🔥 توصية {type_} على SPX 🔻\nStrike: {strike}\nEntry: {entry}\nExpiry: {expiry}"
-    image_url = "https://i.ibb.co/tMmjQwq/spxoption.png"
+    signal_type = data.get('type', 'CALL').upper()
+    strike = data.get('strike', 5450)
+    expiry = data.get('expiry', '0621')  # تاريخ الانتهاء: 21 يونيو
+    entry_price = float(data.get('entry', 2.50))
 
-    await send_alert_to_telegram(msg, image_url=image_url)
+    # حساب الأهداف والوقف
+    target_1 = round(entry_price * 1.30, 2)
+    target_2 = round(entry_price * 1.60, 2)
+    target_3 = round(entry_price * 2.00, 2)
+    stop_loss = round(entry_price * 0.85, 2)
 
-    return {"status": "ok"}
+    # جلب صورة Webull
+    image_url = get_webull_option_image(strike, expiry, signal_type)
+
+    # توليد التوصية
+    msg = f"🔔 توصية SPX ({signal_type})\n\n" \
+          f"📍 Strike: {strike}\n" \
+          f"📆 Expiry: 2025-06-21\n" \
+          f"🎯 دخول: {entry_price} $\n\n" \
+          f"🎯 أهداف:\n" \
+          f"- 30% = {target_1}\n" \
+          f"- 60% = {target_2}\n" \
+          f"- 100% = {target_3}\n\n" \
+          f"❌ وقف الخسارة: {stop_loss} (-15%)"
+
+    bot.send_photo(chat_id=CHANNEL, photo=image_url, caption=msg)
+    return 'تم إرسال التوصية ✅', 200
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
